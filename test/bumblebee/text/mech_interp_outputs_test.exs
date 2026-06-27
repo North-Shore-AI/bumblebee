@@ -45,6 +45,18 @@ defmodule Bumblebee.Text.MechInterpOutputsTest do
       assert Nx.shape(outputs.norm_scales) == {1, 3, 1}
       assert Nx.shape(outputs.norm_normalized) == {1, 3, 4}
     end
+
+    test "causal LM heads preserve final norm telemetry when opted in" do
+      outputs =
+        run_gpt2(
+          :for_causal_language_modeling,
+          output_norm_telemetry: true
+        )
+
+      assert Nx.shape(outputs.logits) == {1, 3, 32}
+      assert Nx.shape(outputs.norm_scales) == {1, 3, 1}
+      assert Nx.shape(outputs.norm_normalized) == {1, 3, 4}
+    end
   end
 
   describe "Qwen3 gated MLP outputs" do
@@ -71,12 +83,28 @@ defmodule Bumblebee.Text.MechInterpOutputsTest do
       assert Nx.shape(outputs.norm_scales) == {1, 3, 1}
       assert Nx.shape(outputs.norm_normalized) == {1, 3, 4}
     end
+
+    test "causal LM heads preserve final norm telemetry when opted in" do
+      outputs =
+        run_qwen3(
+          :for_causal_language_modeling,
+          output_norm_telemetry: true
+        )
+
+      assert Nx.shape(outputs.logits) == {1, 3, 32}
+      assert Nx.shape(outputs.norm_scales) == {1, 3, 1}
+      assert Nx.shape(outputs.norm_normalized) == {1, 3, 4}
+    end
   end
 
   defp run_gpt2(global_layer_options) do
+    run_gpt2(:base, global_layer_options)
+  end
+
+  defp run_gpt2(architecture, global_layer_options) do
     spec =
       Bumblebee.configure(Bumblebee.Text.Gpt2,
-        architecture: :base,
+        architecture: architecture,
         vocab_size: 32,
         hidden_size: 4,
         num_blocks: 2,
@@ -93,9 +121,13 @@ defmodule Bumblebee.Text.MechInterpOutputsTest do
   end
 
   defp run_qwen3(global_layer_options) do
+    run_qwen3(:base, global_layer_options)
+  end
+
+  defp run_qwen3(architecture, global_layer_options) do
     spec =
       Bumblebee.configure(Bumblebee.Text.Qwen3,
-        architecture: :base,
+        architecture: architecture,
         vocab_size: 32,
         hidden_size: 4,
         intermediate_size: 8,

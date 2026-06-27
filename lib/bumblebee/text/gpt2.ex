@@ -231,6 +231,8 @@ defmodule Bumblebee.Text.Gpt2 do
       hidden_states: outputs.hidden_states,
       attentions: outputs.attentions,
       cross_attentions: outputs.cross_attentions,
+      norm_scales: outputs.norm_scales,
+      norm_normalized: outputs.norm_normalized,
       cache: outputs.cache
     })
     |> Layers.output()
@@ -255,7 +257,9 @@ defmodule Bumblebee.Text.Gpt2 do
     |> transformer_outputs(%{
       logits: logits,
       hidden_states: outputs.hidden_states,
-      attentions: outputs.attentions
+      attentions: outputs.attentions,
+      norm_scales: outputs.norm_scales,
+      norm_normalized: outputs.norm_normalized
     })
     |> Layers.output()
   end
@@ -294,7 +298,9 @@ defmodule Bumblebee.Text.Gpt2 do
       logits: pooled_logits,
       hidden_states: outputs.hidden_states,
       attentions: outputs.attentions,
-      cross_attentions: outputs.cross_attentions
+      cross_attentions: outputs.cross_attentions,
+      norm_scales: outputs.norm_scales,
+      norm_normalized: outputs.norm_normalized
     })
     |> Layers.output()
   end

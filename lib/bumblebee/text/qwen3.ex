@@ -229,6 +229,8 @@ defmodule Bumblebee.Text.Qwen3 do
       logits: logits,
       hidden_states: outputs.hidden_states,
       attentions: outputs.attentions,
+      norm_scales: outputs.norm_scales,
+      norm_normalized: outputs.norm_normalized,
       cache: outputs.cache
     })
     |> Layers.output()
@@ -270,6 +272,8 @@ defmodule Bumblebee.Text.Qwen3 do
       logits: pooled_logits,
       hidden_states: outputs.hidden_states,
       attentions: outputs.attentions,
+      norm_scales: outputs.norm_scales,
+      norm_normalized: outputs.norm_normalized,
       cache: outputs.cache
     })
     |> Layers.output()
