@@ -119,6 +119,9 @@ defmodule Bumblebee.Text.Generation do
       not need to be transferred unnecessarily after the computation.
       Defaults to `false`
 
+    * `:trace` - if true, returns per-step processed logits and cache offsets
+      for greedy generation. Defaults to `false`
+
   """
   @spec build_generate(
           Axon.t(),
@@ -129,7 +132,12 @@ defmodule Bumblebee.Text.Generation do
           (params :: map(), inputs :: map() ->
              %{token_ids: Nx.Tensor.t(), length: Nx.Tensor.t()} | (ignored :: Nx.Tensor.t()))
   def build_generate(model, spec, config, opts \\ []) do
-    opts = Keyword.validate!(opts, logits_processors: [], ignore_output: false)
+    opts = Keyword.validate!(opts, logits_processors: [], ignore_output: false, trace: false)
+
+    if opts[:trace] and is_nil(Map.get(spec, :vocab_size)) do
+      raise ArgumentError,
+            "expected model spec to include :vocab_size when generation trace is enabled"
+    end
 
     decoder_start_token_id = config.decoder_start_token_id || config.bos_token_id
     eos_token_id = config.eos_token_id
@@ -179,7 +187,9 @@ defmodule Bumblebee.Text.Generation do
       pad_token_id: pad_token_id,
       eos_token_id: eos_token_id,
       strategy: config.strategy,
-      ignore_output: opts[:ignore_output]
+      ignore_output: opts[:ignore_output],
+      trace: opts[:trace],
+      trace_vocab_size: Map.get(spec, :vocab_size)
     )
   end
 
@@ -494,14 +504,24 @@ defmodule Bumblebee.Text.Generation do
           )
       end
 
-    if opts[:ignore_output] do
-      state.ignored
-    else
-      %{
-        # Output only the newly generated tokens
-        token_ids: state.sequences[[.., length..-1//1]],
-        length: state.finished_length - length
-      }
+    cond do
+      opts[:ignore_output] ->
+        state.ignored
+
+      opts[:trace] ->
+        %{
+          token_ids: state.sequences[[.., length..-1//1]],
+          length: state.finished_length - length,
+          trace_logits: state.trace_logits,
+          trace_cache_offsets: state.trace_cache_offsets
+        }
+
+      true ->
+        %{
+          # Output only the newly generated tokens
+          token_ids: state.sequences[[.., length..-1//1]],
+          length: state.finished_length - length
+        }
     end
   end
 
@@ -532,7 +552,9 @@ defmodule Bumblebee.Text.Generation do
         padded_batch_item?,
         max_length,
         pad_token_id,
-        logits_processor_init_fun
+        logits_processor_init_fun,
+        trace: opts[:trace],
+        trace_vocab_size: opts[:trace_vocab_size]
       )
 
     # The loop works with inputs of length 1, so if the initial input
@@ -547,7 +569,8 @@ defmodule Bumblebee.Text.Generation do
           logits_processor_process_fun,
           update_inputs_fun,
           pad_token_id: pad_token_id,
-          eos_token_id: eos_token_id
+          eos_token_id: eos_token_id,
+          trace: opts[:trace]
         )
       else
         {state, inputs}
@@ -564,7 +587,8 @@ defmodule Bumblebee.Text.Generation do
             logits_processor_process_fun,
             update_inputs_fun,
             pad_token_id: pad_token_id,
-            eos_token_id: eos_token_id
+            eos_token_id: eos_token_id,
+            trace: opts[:trace]
           )
 
         {state, inputs, params}
@@ -578,7 +602,8 @@ defmodule Bumblebee.Text.Generation do
           padded_batch_item?,
           max_length,
           pad_token_id,
-          logits_processor_init_fun
+          logits_processor_init_fun,
+          opts \\ []
         ) do
     {batch_size, length} = Nx.shape(decoder_input_ids)
 
@@ -597,7 +622,7 @@ defmodule Bumblebee.Text.Generation do
       length: length
     }
 
-    %{
+    state = %{
       sequences: sequences,
       input_length: length,
       length: length,
@@ -606,6 +631,24 @@ defmodule Bumblebee.Text.Generation do
       ignored: Nx.broadcast(0, {batch_size}),
       logits_processor_states: logits_processor_init_fun.(context)
     }
+
+    if opts[:trace] do
+      max_new_tokens = max_length - length
+      vocab_size = opts[:trace_vocab_size]
+
+      %{
+        sequences: state.sequences,
+        input_length: state.input_length,
+        length: state.length,
+        finished_length: state.finished_length,
+        ignored: state.ignored,
+        logits_processor_states: state.logits_processor_states,
+        trace_logits: Nx.broadcast(0.0, {batch_size, max_new_tokens, vocab_size}),
+        trace_cache_offsets: Nx.broadcast(0, {batch_size, max_new_tokens})
+      }
+    else
+      state
+    end
   end
 
   defnp continue?(finished_length) do
@@ -628,6 +671,7 @@ defmodule Bumblebee.Text.Generation do
 
     logits = outputs.logits[[.., -1]]
     {logits, state} = batch_process_logits(logits_processor_process_fun, logits, state)
+    state = maybe_trace_greedy_step(state, logits, outputs.cache, opts)
     token_id = Nx.argmax(logits, axis: -1)
 
     state = update_sequences(state, token_id, pad_token_id, eos_token_id)
@@ -635,6 +679,28 @@ defmodule Bumblebee.Text.Generation do
     inputs = update_inputs_fun.(inputs, outputs.cache, Nx.new_axis(token_id, -1))
 
     {state, inputs}
+  end
+
+  defnp maybe_trace_greedy_step(state, logits, cache, opts \\ []) do
+    if opts[:trace] do
+      trace_index = state.length - state.input_length
+      batch_size = Nx.axis_size(logits, 0)
+
+      trace_logits =
+        Nx.put_slice(state.trace_logits, [0, trace_index, 0], Nx.new_axis(logits, 1))
+
+      cache_offsets =
+        cache.offset
+        |> Nx.reshape({1, 1})
+        |> Nx.broadcast({batch_size, 1})
+
+      trace_cache_offsets =
+        Nx.put_slice(state.trace_cache_offsets, [0, trace_index], cache_offsets)
+
+      %{state | trace_logits: trace_logits, trace_cache_offsets: trace_cache_offsets}
+    else
+      state
+    end
   end
 
   defnp update_sequences(state, token_id, pad_token_id, eos_token_id) do
