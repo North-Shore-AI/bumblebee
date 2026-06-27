@@ -111,6 +111,7 @@ defmodule Bumblebee.Layers.Transformer do
       attention_queries: Axon.container({}),
       attention_keys: Axon.container({}),
       attention_values: Axon.container({}),
+      attention_scores: Axon.container({}),
       attention_zs: Axon.container({}),
       attention_outputs: Axon.container({}),
       mlp_inputs: Axon.container({}),
@@ -185,6 +186,8 @@ defmodule Bumblebee.Layers.Transformer do
             attention_keys: Layers.append(state.attention_keys, block_internals.attention_key),
             attention_values:
               Layers.append(state.attention_values, block_internals.attention_value),
+            attention_scores:
+              Layers.append(state.attention_scores, block_internals.attention_score),
             attention_zs: Layers.append(state.attention_zs, block_internals.attention_z),
             attention_outputs:
               Layers.append(state.attention_outputs, block_internals.attention_output),
@@ -613,6 +616,7 @@ defmodule Bumblebee.Layers.Transformer do
         attention_query: attention_internals.query,
         attention_key: attention_internals.key,
         attention_value: attention_internals.value,
+        attention_score: attention_internals.score,
         attention_z: attention_internals.z,
         attention_output: attention_internals.output,
         residual_stream_post: hidden_state
@@ -773,6 +777,7 @@ defmodule Bumblebee.Layers.Transformer do
       attention_query: Layers.none(),
       attention_key: Layers.none(),
       attention_value: Layers.none(),
+      attention_score: Layers.none(),
       attention_z: Layers.none(),
       attention_output: Layers.none(),
       mlp_input: Layers.none(),
@@ -792,6 +797,7 @@ defmodule Bumblebee.Layers.Transformer do
       query: Layers.none(),
       key: Layers.none(),
       value: Layers.none(),
+      score: Layers.none(),
       z: Layers.none(),
       output: Layers.none()
     }
@@ -1119,8 +1125,8 @@ defmodule Bumblebee.Layers.Transformer do
           )
       end
 
-    {attention_z, attention_weights} =
-      Layers.attention(
+    {attention_z, attention_weights, attention_scores} =
+      Layers.attention_with_scores(
         query,
         key,
         value,
@@ -1147,6 +1153,7 @@ defmodule Bumblebee.Layers.Transformer do
       query: attention_query,
       key: attention_key,
       value: attention_value,
+      score: attention_scores,
       z: attention_z,
       output: attention_output
     }

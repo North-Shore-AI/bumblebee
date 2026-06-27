@@ -150,7 +150,7 @@ defmodule Bumblebee.Text.Gpt2 do
 
   ## Global layer options
 
-  #{Shared.global_layer_options_doc([:output_hidden_states, :output_attentions, :output_attention_qkv, :output_mlp_activations, :output_residual_streams])}
+  #{Shared.global_layer_options_doc([:output_hidden_states, :output_attentions, :output_attention_qkv, :output_attention_scores, :output_mlp_activations, :output_residual_streams])}
 
   ## Configuration
 
@@ -171,6 +171,7 @@ defmodule Bumblebee.Text.Gpt2 do
     :attention_queries,
     :attention_keys,
     :attention_values,
+    :attention_scores,
     :attention_zs,
     :attention_outputs,
     :mlp_inputs,

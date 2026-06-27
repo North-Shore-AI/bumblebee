@@ -19,6 +19,10 @@ defmodule Bumblebee.Shared do
         default: false,
         doc: "whether the model should return attention query/key/value activations"
       ],
+      output_attention_scores: [
+        default: false,
+        doc: "whether the model should return attention scores before softmax"
+      ],
       output_mlp_activations: [
         default: false,
         doc: "whether the model should return feed-forward network activations"
@@ -86,6 +90,8 @@ defmodule Bumblebee.Shared do
       output_attentions: "when `true`, the model output includes all attention weights",
       output_attention_qkv:
         "when `true`, the model output includes attention query/key/value activations",
+      output_attention_scores:
+        "when `true`, the model output includes attention scores before softmax",
       output_mlp_activations:
         "when `true`, the model output includes feed-forward network activations",
       output_residual_streams:
@@ -119,6 +125,7 @@ defmodule Bumblebee.Shared do
       output_hidden_states: {"output_hidden_states", boolean()},
       output_attentions: {"output_attentions", boolean()},
       output_attention_qkv: {"output_attention_qkv", boolean()},
+      output_attention_scores: {"output_attention_scores", boolean()},
       output_mlp_activations: {"output_mlp_activations", boolean()},
       output_residual_streams: {"output_residual_streams", boolean()},
       num_labels: {"num_labels", number()},

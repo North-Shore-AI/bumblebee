@@ -231,11 +231,24 @@ defmodule Bumblebee.Layers do
 
   """
   def attention(query, key, value, key_mask, head_mask, bias, offset, opts \\ []) do
+    {output, weights, _scores} =
+      attention_with_scores(query, key, value, key_mask, head_mask, bias, offset, opts)
+
+    {output, weights}
+  end
+
+  @doc """
+  Adds a dot-product attention layer and also returns pre-softmax scores.
+
+  This is useful for instrumentation paths that need TransformerLens-style
+  `hook_attn_scores` while keeping `attention/8` backward-compatible.
+  """
+  def attention_with_scores(query, key, value, key_mask, head_mask, bias, offset, opts \\ []) do
     opts = Keyword.validate!(opts, [:window_size, :scale, causal: false, dropout_rate: 0.0])
 
-    weights =
+    scores_and_weights =
       Axon.layer(
-        &attention_weights_impl/7,
+        &attention_scores_and_weights_impl/7,
         [
           query,
           key,
@@ -248,14 +261,28 @@ defmodule Bumblebee.Layers do
         window_size: opts[:window_size],
         scale: opts[:scale]
       )
+
+    scores = Axon.layer(fn {scores, _weights}, _opts -> scores end, [scores_and_weights])
+    weights = Axon.layer(fn {_scores, weights}, _opts -> weights end, [scores_and_weights])
+
+    weights =
+      weights
       |> Axon.dropout(rate: opts[:dropout_rate])
 
     output = Axon.layer(&attention_output_impl/3, [weights, value], opts)
 
-    {output, weights}
+    {output, weights, scores}
   end
 
-  defnp attention_weights_impl(query, key, key_mask, head_mask, bias, offset, opts \\ []) do
+  defnp attention_scores_and_weights_impl(
+          query,
+          key,
+          key_mask,
+          head_mask,
+          bias,
+          offset,
+          opts \\ []
+        ) do
     opts = keyword!(opts, [:window_size, mode: :inference, scale: true, causal: false])
 
     query = Nx.transpose(query, axes: [0, 2, 1, 3])
@@ -327,18 +354,21 @@ defmodule Bumblebee.Layers do
           )
       end
 
-    weights = weights + bias
+    scores = weights + bias
 
-    weights = Axon.Activations.softmax(weights, axis: -1)
+    weights = Axon.Activations.softmax(scores, axis: -1)
 
-    case head_mask do
-      %Axon.None{} ->
-        weights
+    weights =
+      case head_mask do
+        %Axon.None{} ->
+          weights
 
-      head_mask ->
-        head_mask = Nx.reshape(head_mask, {1, :auto, 1, 1})
-        Nx.multiply(weights, head_mask)
-    end
+        head_mask ->
+          head_mask = Nx.reshape(head_mask, {1, :auto, 1, 1})
+          Nx.multiply(weights, head_mask)
+      end
+
+    {scores, weights}
   end
 
   defnp causal_mask(query_sequence_length, key_sequence_length, offset) do
@@ -984,6 +1014,7 @@ defmodule Bumblebee.Layers do
     :attention_queries => :output_attention_qkv,
     :attention_keys => :output_attention_qkv,
     :attention_values => :output_attention_qkv,
+    :attention_scores => :output_attention_scores,
     :attention_zs => :output_attention_qkv,
     :attention_outputs => :output_attention_qkv,
     :mlp_inputs => :output_mlp_activations,

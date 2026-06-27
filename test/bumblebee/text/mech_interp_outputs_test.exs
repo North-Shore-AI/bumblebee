@@ -6,6 +6,7 @@ defmodule Bumblebee.Text.MechInterpOutputsTest do
       outputs = run_gpt2([])
 
       assert %Axon.None{} = outputs.attention_queries
+      assert %Axon.None{} = outputs.attention_scores
       assert %Axon.None{} = outputs.mlp_pre_activations
       assert %Axon.None{} = outputs.residual_streams_pre
     end
@@ -14,6 +15,7 @@ defmodule Bumblebee.Text.MechInterpOutputsTest do
       outputs =
         run_gpt2(
           output_attention_qkv: true,
+          output_attention_scores: true,
           output_mlp_activations: true,
           output_residual_streams: true
         )
@@ -22,6 +24,7 @@ defmodule Bumblebee.Text.MechInterpOutputsTest do
       assert Nx.shape(elem(outputs.attention_queries, 0)) == {1, 3, 2, 2}
       assert Nx.shape(elem(outputs.attention_keys, 0)) == {1, 3, 2, 2}
       assert Nx.shape(elem(outputs.attention_values, 0)) == {1, 3, 2, 2}
+      assert Nx.shape(elem(outputs.attention_scores, 0)) == {1, 2, 3, 3}
       assert Nx.shape(elem(outputs.attention_zs, 0)) == {1, 3, 2, 2}
       assert Nx.shape(elem(outputs.attention_outputs, 0)) == {1, 3, 4}
 
@@ -40,11 +43,17 @@ defmodule Bumblebee.Text.MechInterpOutputsTest do
 
   describe "Qwen3 gated MLP outputs" do
     test "include real gated feed-forward activations when opted in" do
-      outputs = run_qwen3(output_attention_qkv: true, output_mlp_activations: true)
+      outputs =
+        run_qwen3(
+          output_attention_qkv: true,
+          output_attention_scores: true,
+          output_mlp_activations: true
+        )
 
       assert Nx.shape(elem(outputs.attention_queries, 0)) == {1, 3, 2, 2}
       assert Nx.shape(elem(outputs.attention_keys, 0)) == {1, 3, 1, 2}
       assert Nx.shape(elem(outputs.attention_values, 0)) == {1, 3, 1, 2}
+      assert Nx.shape(elem(outputs.attention_scores, 0)) == {1, 2, 3, 3}
 
       assert tuple_size(outputs.mlp_pre_activations) == 2
       assert Nx.shape(elem(outputs.mlp_inputs, 0)) == {1, 3, 4}
