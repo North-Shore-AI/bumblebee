@@ -150,7 +150,7 @@ defmodule Bumblebee.Text.Gpt2 do
 
   ## Global layer options
 
-  #{Shared.global_layer_options_doc([:output_hidden_states, :output_attentions])}
+  #{Shared.global_layer_options_doc([:output_hidden_states, :output_attentions, :output_attention_qkv, :output_mlp_activations, :output_residual_streams])}
 
   ## Configuration
 
@@ -166,6 +166,21 @@ defmodule Bumblebee.Text.Gpt2 do
   import Bumblebee.Utils.Model, only: [join: 2]
 
   alias Bumblebee.Layers
+
+  @transformer_activation_outputs [
+    :attention_queries,
+    :attention_keys,
+    :attention_values,
+    :attention_zs,
+    :attention_outputs,
+    :mlp_inputs,
+    :mlp_pre_activations,
+    :mlp_post_activations,
+    :mlp_outputs,
+    :residual_streams_pre,
+    :residual_streams_mid,
+    :residual_streams_post
+  ]
 
   @impl true
   def architectures(),
@@ -209,13 +224,15 @@ defmodule Bumblebee.Text.Gpt2 do
         name: "language_modeling_head.output"
       )
 
-    Layers.output(%{
+    outputs
+    |> transformer_outputs(%{
       logits: logits,
       hidden_states: outputs.hidden_states,
       attentions: outputs.attentions,
       cross_attentions: outputs.cross_attentions,
       cache: outputs.cache
     })
+    |> Layers.output()
   end
 
   def model(%__MODULE__{architecture: :for_token_classification} = spec) do
@@ -233,11 +250,13 @@ defmodule Bumblebee.Text.Gpt2 do
         name: "token_classification_head.output"
       )
 
-    Layers.output(%{
+    outputs
+    |> transformer_outputs(%{
       logits: logits,
       hidden_states: outputs.hidden_states,
       attentions: outputs.attentions
     })
+    |> Layers.output()
   end
 
   def model(%__MODULE__{architecture: :for_sequence_classification} = spec) do
@@ -269,12 +288,14 @@ defmodule Bumblebee.Text.Gpt2 do
         Layers.take_token(logits, axis: 1, index: -1)
       end
 
-    Layers.output(%{
+    outputs
+    |> transformer_outputs(%{
       logits: pooled_logits,
       hidden_states: outputs.hidden_states,
       attentions: outputs.attentions,
       cross_attentions: outputs.cross_attentions
     })
+    |> Layers.output()
   end
 
   @impl true
@@ -344,13 +365,13 @@ defmodule Bumblebee.Text.Gpt2 do
         name: "norm"
       )
 
-    %{
+    transformer_outputs(outputs, %{
       hidden_state: hidden_state,
       hidden_states: Layers.replace(outputs.hidden_states, -1, hidden_state),
       attentions: outputs.attentions,
       cross_attentions: outputs.cross_attentions,
       cache: outputs.cache
-    }
+    })
   end
 
   defp embedder(input_ids, position_ids, input_embeddings, spec, opts) do
@@ -428,6 +449,12 @@ defmodule Bumblebee.Text.Gpt2 do
 
   defp classifier_dropout_rate(spec) do
     spec.classifier_dropout_rate || spec.dropout_rate
+  end
+
+  defp transformer_outputs(outputs, base) do
+    Enum.reduce(@transformer_activation_outputs, base, fn key, acc ->
+      Map.put(acc, key, Map.fetch!(outputs, key))
+    end)
   end
 
   defp kernel_initializer(spec) do

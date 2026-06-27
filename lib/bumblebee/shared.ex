@@ -15,6 +15,18 @@ defmodule Bumblebee.Shared do
         default: false,
         doc: "whether the model should return all attentions"
       ],
+      output_attention_qkv: [
+        default: false,
+        doc: "whether the model should return attention query/key/value activations"
+      ],
+      output_mlp_activations: [
+        default: false,
+        doc: "whether the model should return feed-forward network activations"
+      ],
+      output_residual_streams: [
+        default: false,
+        doc: "whether the model should return transformer residual stream activations"
+      ],
       num_labels: [
         default: 2,
         doc: "the number of labels to use in the last layer for the classification task"
@@ -71,7 +83,13 @@ defmodule Bumblebee.Shared do
   def global_layer_options_doc(names) do
     docs = [
       output_hidden_states: "when `true`, the model output includes all hidden states",
-      output_attentions: "when `true`, the model output includes all attention weights"
+      output_attentions: "when `true`, the model output includes all attention weights",
+      output_attention_qkv:
+        "when `true`, the model output includes attention query/key/value activations",
+      output_mlp_activations:
+        "when `true`, the model output includes feed-forward network activations",
+      output_residual_streams:
+        "when `true`, the model output includes transformer residual stream activations"
     ]
 
     Enum.map_join(names, "\n\n", fn name ->
@@ -100,6 +118,9 @@ defmodule Bumblebee.Shared do
     converters = [
       output_hidden_states: {"output_hidden_states", boolean()},
       output_attentions: {"output_attentions", boolean()},
+      output_attention_qkv: {"output_attention_qkv", boolean()},
+      output_mlp_activations: {"output_mlp_activations", boolean()},
+      output_residual_streams: {"output_residual_streams", boolean()},
       num_labels: {"num_labels", number()},
       id_to_label: {"id2label", map(integer_as_string(), string())},
       use_cross_attention: {"use_cross_attention", false},

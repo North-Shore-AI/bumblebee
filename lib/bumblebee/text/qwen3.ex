@@ -139,7 +139,7 @@ defmodule Bumblebee.Text.Qwen3 do
 
   ## Global layer options
 
-  #{Shared.global_layer_options_doc([:output_hidden_states, :output_attentions])}
+  #{Shared.global_layer_options_doc([:output_hidden_states, :output_attentions, :output_attention_qkv, :output_mlp_activations, :output_residual_streams])}
 
   ## Configuration
 
@@ -155,6 +155,21 @@ defmodule Bumblebee.Text.Qwen3 do
   import Bumblebee.Utils.Model, only: [join: 2]
 
   alias Bumblebee.Layers
+
+  @transformer_activation_outputs [
+    :attention_queries,
+    :attention_keys,
+    :attention_values,
+    :attention_zs,
+    :attention_outputs,
+    :mlp_inputs,
+    :mlp_pre_activations,
+    :mlp_post_activations,
+    :mlp_outputs,
+    :residual_streams_pre,
+    :residual_streams_mid,
+    :residual_streams_post
+  ]
 
   @impl true
   def architectures(),
@@ -208,12 +223,14 @@ defmodule Bumblebee.Text.Qwen3 do
     outputs = core(inputs, spec)
     logits = language_modeling_head(outputs.hidden_state, spec, name: "language_modeling_head")
 
-    Layers.output(%{
+    outputs
+    |> transformer_outputs(%{
       logits: logits,
       hidden_states: outputs.hidden_states,
       attentions: outputs.attentions,
       cache: outputs.cache
     })
+    |> Layers.output()
   end
 
   def model(%__MODULE__{architecture: :for_sequence_classification} = spec) do
@@ -247,12 +264,14 @@ defmodule Bumblebee.Text.Qwen3 do
         Layers.take_token(logits, axis: 1, index: -1)
       end
 
-    Layers.output(%{
+    outputs
+    |> transformer_outputs(%{
       logits: pooled_logits,
       hidden_states: outputs.hidden_states,
       attentions: outputs.attentions,
       cache: outputs.cache
     })
+    |> Layers.output()
   end
 
   defp inputs(spec) do
@@ -302,12 +321,12 @@ defmodule Bumblebee.Text.Qwen3 do
         epsilon: spec.layer_norm_epsilon
       )
 
-    %{
+    transformer_outputs(decoder_outputs, %{
       hidden_state: hidden_state,
       hidden_states: Layers.append(decoder_outputs.hidden_states, hidden_state),
       attentions: decoder_outputs.attentions,
       cache: decoder_outputs.cache
-    }
+    })
   end
 
   defp embedder(input_ids, input_embeddings, spec, opts) do
@@ -360,11 +379,13 @@ defmodule Bumblebee.Text.Qwen3 do
       cache: cache,
       causal: true,
       layer_norm: &Layers.rms_norm(&1, epsilon: spec.layer_norm_epsilon, name: &2),
-      ffn:
-        &gated_ffn(&1, spec.intermediate_size, spec.hidden_size,
-          name: &2,
-          activation: spec.activation
-        ),
+      ffn: fn hidden_state, name, opts ->
+        gated_ffn(hidden_state, spec.intermediate_size, spec.hidden_size,
+          name: name,
+          activation: spec.activation,
+          output_internals: opts[:output_internals]
+        )
+      end,
       rotary_embedding: [
         position_ids: position_ids,
         max_positions: spec.max_positions,
@@ -380,6 +401,7 @@ defmodule Bumblebee.Text.Qwen3 do
   defp gated_ffn(hidden_state, intermediate_size, output_size, opts) do
     name = opts[:name]
     activation = opts[:activation]
+    ffn_input = hidden_state
 
     intermediate =
       Axon.dense(hidden_state, intermediate_size,
@@ -389,9 +411,28 @@ defmodule Bumblebee.Text.Qwen3 do
 
     gate = Axon.dense(hidden_state, intermediate_size, name: join(name, "gate"), use_bias: false)
 
-    hidden_state = Axon.multiply(intermediate, Axon.activation(gate, activation))
+    activated_gate = Axon.activation(gate, activation)
+    hidden_state = Axon.multiply(intermediate, activated_gate)
 
-    Axon.dense(hidden_state, output_size, name: join(name, "output"), use_bias: false)
+    output = Axon.dense(hidden_state, output_size, name: join(name, "output"), use_bias: false)
+
+    if opts[:output_internals] do
+      {output,
+       %{
+         input: ffn_input,
+         pre_activation: gate,
+         post_activation: hidden_state,
+         output: output
+       }}
+    else
+      output
+    end
+  end
+
+  defp transformer_outputs(outputs, base) do
+    Enum.reduce(@transformer_activation_outputs, base, fn key, acc ->
+      Map.put(acc, key, Map.fetch!(outputs, key))
+    end)
   end
 
   defp language_modeling_head(hidden_state, spec, opts) do

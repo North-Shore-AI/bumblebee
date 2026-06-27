@@ -980,7 +980,19 @@ defmodule Bumblebee.Layers do
 
   @opt_in_outputs %{
     :hidden_states => :output_hidden_states,
-    :attentions => :output_attentions
+    :attentions => :output_attentions,
+    :attention_queries => :output_attention_qkv,
+    :attention_keys => :output_attention_qkv,
+    :attention_values => :output_attention_qkv,
+    :attention_zs => :output_attention_qkv,
+    :attention_outputs => :output_attention_qkv,
+    :mlp_inputs => :output_mlp_activations,
+    :mlp_pre_activations => :output_mlp_activations,
+    :mlp_post_activations => :output_mlp_activations,
+    :mlp_outputs => :output_mlp_activations,
+    :residual_streams_pre => :output_residual_streams,
+    :residual_streams_mid => :output_residual_streams,
+    :residual_streams_post => :output_residual_streams
   }
 
   defp maybe_opt_in_output(%Axon{} = input, key) do

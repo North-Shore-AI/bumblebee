@@ -108,6 +108,18 @@ defmodule Bumblebee.Layers.Transformer do
       hidden_states: Axon.container({hidden_state}),
       attentions: Axon.container({}),
       cross_attentions: Axon.container({}),
+      attention_queries: Axon.container({}),
+      attention_keys: Axon.container({}),
+      attention_values: Axon.container({}),
+      attention_zs: Axon.container({}),
+      attention_outputs: Axon.container({}),
+      mlp_inputs: Axon.container({}),
+      mlp_pre_activations: Axon.container({}),
+      mlp_post_activations: Axon.container({}),
+      mlp_outputs: Axon.container({}),
+      residual_streams_pre: Axon.container({}),
+      residual_streams_mid: Axon.container({}),
+      residual_streams_post: Axon.container({}),
       cache: cache,
       attention_relative_bias: Layers.none()
     }
@@ -142,8 +154,9 @@ defmodule Bumblebee.Layers.Transformer do
               size -> size
             end
 
-          {hidden_state, attention, cross_attention, block_cache, attention_relative_bias} =
-            block(
+          {hidden_state, attention, cross_attention, block_cache, attention_relative_bias,
+           block_internals} =
+            block_outputs(
               state.hidden_state,
               [
                 attention_mask: attention_mask,
@@ -167,6 +180,26 @@ defmodule Bumblebee.Layers.Transformer do
             hidden_states: Layers.append(state.hidden_states, hidden_state),
             attentions: Layers.append(state.attentions, attention),
             cross_attentions: Layers.append(state.cross_attentions, cross_attention),
+            attention_queries:
+              Layers.append(state.attention_queries, block_internals.attention_query),
+            attention_keys: Layers.append(state.attention_keys, block_internals.attention_key),
+            attention_values:
+              Layers.append(state.attention_values, block_internals.attention_value),
+            attention_zs: Layers.append(state.attention_zs, block_internals.attention_z),
+            attention_outputs:
+              Layers.append(state.attention_outputs, block_internals.attention_output),
+            mlp_inputs: Layers.append(state.mlp_inputs, block_internals.mlp_input),
+            mlp_pre_activations:
+              Layers.append(state.mlp_pre_activations, block_internals.mlp_pre_activation),
+            mlp_post_activations:
+              Layers.append(state.mlp_post_activations, block_internals.mlp_post_activation),
+            mlp_outputs: Layers.append(state.mlp_outputs, block_internals.mlp_output),
+            residual_streams_pre:
+              Layers.append(state.residual_streams_pre, block_internals.residual_stream_pre),
+            residual_streams_mid:
+              Layers.append(state.residual_streams_mid, block_internals.residual_stream_mid),
+            residual_streams_post:
+              Layers.append(state.residual_streams_post, block_internals.residual_stream_post),
             attention_relative_bias: attention_relative_bias,
             cache: cache
           }
@@ -322,6 +355,13 @@ defmodule Bumblebee.Layers.Transformer do
 
   """
   def block(hidden_state, opts) do
+    {hidden_state, attention, cross_attention, block_cache, attention_relative_bias, _internals} =
+      block_outputs(hidden_state, opts)
+
+    {hidden_state, attention, cross_attention, block_cache, attention_relative_bias}
+  end
+
+  defp block_outputs(hidden_state, opts) do
     validate_required_keys!(opts, [:num_attention_heads, :hidden_size, :ffn])
 
     opts =
@@ -393,15 +433,23 @@ defmodule Bumblebee.Layers.Transformer do
           validate_required_keys!(opts, [:intermediate_size])
           opts = Keyword.validate!(opts, [:intermediate_size, activation: :gelu])
 
-          &basic_ffn(&1, opts[:intermediate_size], hidden_size,
+          &basic_ffn_with_internals(&1, opts[:intermediate_size], hidden_size,
             activation: opts[:activation],
             kernel_initializer: kernel_initializer,
             dropout_rate: dropout_rate,
             name: &2
           )
 
+        fun when is_function(fun, 3) ->
+          fn hidden_state, name ->
+            normalize_ffn_result(hidden_state, fun.(hidden_state, name, output_internals: true))
+          end
+
         fun when is_function(fun) ->
-          fun
+          fn hidden_state, name ->
+            output = fun.(hidden_state, name)
+            {output, default_ffn_internals(hidden_state, output)}
+          end
       end
 
     layer_norm_fun =
@@ -422,9 +470,10 @@ defmodule Bumblebee.Layers.Transformer do
 
     self_attention_norm = &layer_norm_fun.(&1, join(name, "self_attention_norm"))
 
-    self_attention = fn hidden_state ->
-      {hidden_state, attention, self_attention_cache, attention_relative_bias} =
-        multi_head_attention(hidden_state, hidden_state, hidden_state,
+    self_attention_with_internals = fn hidden_state ->
+      {hidden_state, attention, self_attention_cache, attention_relative_bias,
+       attention_internals} =
+        multi_head_attention_outputs(hidden_state, hidden_state, hidden_state,
           attention_mask: attention_mask,
           attention_head_mask: attention_head_mask,
           attention_relative_bias: attention_relative_bias,
@@ -452,6 +501,14 @@ defmodule Bumblebee.Layers.Transformer do
       hidden_state =
         Axon.dropout(hidden_state, rate: dropout_rate, name: join(name, "self_attention_dropout"))
 
+      {hidden_state,
+       {attention, self_attention_cache, attention_relative_bias, attention_internals}}
+    end
+
+    self_attention = fn hidden_state ->
+      {hidden_state, {attention, self_attention_cache, attention_relative_bias, _internals}} =
+        self_attention_with_internals.(hidden_state)
+
       {hidden_state, {attention, self_attention_cache, attention_relative_bias}}
     end
 
@@ -472,8 +529,9 @@ defmodule Bumblebee.Layers.Transformer do
     cross_attention_norm = &layer_norm_fun.(&1, join(name, "cross_attention_norm"))
 
     cross_attention = fn hidden_state ->
-      {hidden_state, cross_attention, cross_attention_cache, _cross_attention_relative_bias} =
-        multi_head_attention(hidden_state, cross_hidden_state, cross_hidden_state,
+      {hidden_state, cross_attention, cross_attention_cache, _cross_attention_relative_bias,
+       _cross_attention_internals} =
+        multi_head_attention_outputs(hidden_state, cross_hidden_state, cross_hidden_state,
           attention_mask: cross_attention_mask,
           attention_head_mask: cross_attention_head_mask,
           attention_cache: cross_attention_cache,
@@ -516,12 +574,15 @@ defmodule Bumblebee.Layers.Transformer do
         fun when is_function(fun) -> fun
       end
 
-    {hidden_state, attention_info, cross_attention_info} =
+    block_input = hidden_state
+
+    block_result =
       block_impl.(
-        hidden_state,
+        block_input,
         %{
           self_attention_norm: self_attention_norm,
           self_attention: self_attention,
+          self_attention_with_internals: self_attention_with_internals,
           cross_attention_maybe: cross_attention_maybe,
           cross_attention_norm: cross_attention_norm,
           cross_attention: cross_attention,
@@ -531,7 +592,12 @@ defmodule Bumblebee.Layers.Transformer do
         name
       )
 
-    {attention, self_attention_cache, attention_relative_bias} = attention_info
+    {hidden_state, attention_info, cross_attention_info, block_internals} =
+      normalize_block_result(block_result, block_input)
+
+    {attention, self_attention_cache, attention_relative_bias, attention_internals} =
+      normalize_attention_info(attention_info)
+
     {cross_attention, cross_attention_cache} = cross_attention_info
 
     block_cache =
@@ -541,13 +607,27 @@ defmodule Bumblebee.Layers.Transformer do
         cross_attention_cache
       )
 
-    {hidden_state, attention, cross_attention, block_cache, attention_relative_bias}
+    block_internals =
+      block_internals
+      |> Map.merge(%{
+        attention_query: attention_internals.query,
+        attention_key: attention_internals.key,
+        attention_value: attention_internals.value,
+        attention_z: attention_internals.z,
+        attention_output: attention_internals.output,
+        residual_stream_post: hidden_state
+      })
+      |> normalize_block_internals()
+
+    {hidden_state, attention, cross_attention, block_cache, attention_relative_bias,
+     block_internals}
   end
 
   defp block_impl(:standard, hidden_state, steps, _name) do
+    residual_stream_pre = hidden_state
     shortcut = hidden_state
 
-    {hidden_state, attention_info} = steps.self_attention.(hidden_state)
+    {hidden_state, attention_info} = steps.self_attention_with_internals.(hidden_state)
 
     hidden_state =
       hidden_state
@@ -568,24 +648,33 @@ defmodule Bumblebee.Layers.Transformer do
         {hidden_state, cross_attention_info}
       end)
 
+    residual_stream_mid = hidden_state
     shortcut = hidden_state
 
+    {ffn_hidden_state, ffn_internals} = steps.ffn.(hidden_state)
+
     hidden_state =
-      hidden_state
-      |> steps.ffn.()
+      ffn_hidden_state
       |> Axon.add(shortcut)
       |> steps.output_norm.()
 
-    {hidden_state, attention_info, cross_attention_info}
+    {hidden_state, attention_info, cross_attention_info,
+     %{
+       residual_stream_pre: residual_stream_pre,
+       residual_stream_mid: residual_stream_mid,
+       mlp_input: ffn_internals.input,
+       mlp_pre_activation: ffn_internals.pre_activation,
+       mlp_post_activation: ffn_internals.post_activation,
+       mlp_output: ffn_internals.output
+     }}
   end
 
   defp block_impl(:norm_first, hidden_state, steps, _name) do
+    residual_stream_pre = hidden_state
     shortcut = hidden_state
 
-    {hidden_state, attention_info} =
-      hidden_state
-      |> steps.self_attention_norm.()
-      |> steps.self_attention.()
+    self_attention_input = steps.self_attention_norm.(hidden_state)
+    {hidden_state, attention_info} = steps.self_attention_with_internals.(self_attention_input)
 
     hidden_state = Axon.add(hidden_state, shortcut)
 
@@ -603,54 +692,154 @@ defmodule Bumblebee.Layers.Transformer do
         {hidden_state, cross_attention_info}
       end)
 
+    residual_stream_mid = hidden_state
     shortcut = hidden_state
 
-    hidden_state =
-      hidden_state
-      |> steps.output_norm.()
-      |> steps.ffn.()
-      |> Axon.add(shortcut)
+    mlp_input = steps.output_norm.(hidden_state)
+    {ffn_hidden_state, ffn_internals} = steps.ffn.(mlp_input)
 
-    {hidden_state, attention_info, cross_attention_info}
+    hidden_state =
+      Axon.add(ffn_hidden_state, shortcut)
+
+    {hidden_state, attention_info, cross_attention_info,
+     %{
+       residual_stream_pre: residual_stream_pre,
+       residual_stream_mid: residual_stream_mid,
+       mlp_input: ffn_internals.input,
+       mlp_pre_activation: ffn_internals.pre_activation,
+       mlp_post_activation: ffn_internals.post_activation,
+       mlp_output: ffn_internals.output
+     }}
   end
 
   defp block_impl(:parallel, hidden_state, steps, _name) do
+    residual_stream_pre = hidden_state
     shortcut = hidden_state
 
     {attention_hidden_state, attention_info} =
       hidden_state
       |> steps.self_attention_norm.()
-      |> steps.self_attention.()
+      |> steps.self_attention_with_internals.()
 
     {_hidden_state, cross_attention_info} =
       steps.cross_attention_maybe.(hidden_state, fn _hidden_state ->
         raise "cross attention not supported"
       end)
 
-    ffn_hidden_state =
-      hidden_state
-      |> steps.output_norm.()
-      |> steps.ffn.()
+    mlp_input = steps.output_norm.(hidden_state)
+    {ffn_hidden_state, ffn_internals} = steps.ffn.(mlp_input)
 
+    residual_stream_mid = Axon.add(shortcut, attention_hidden_state)
     hidden_state = Axon.add([shortcut, attention_hidden_state, ffn_hidden_state])
 
-    {hidden_state, attention_info, cross_attention_info}
+    {hidden_state, attention_info, cross_attention_info,
+     %{
+       residual_stream_pre: residual_stream_pre,
+       residual_stream_mid: residual_stream_mid,
+       mlp_input: ffn_internals.input,
+       mlp_pre_activation: ffn_internals.pre_activation,
+       mlp_post_activation: ffn_internals.post_activation,
+       mlp_output: ffn_internals.output
+     }}
   end
 
-  defp basic_ffn(x, intermediate_size, output_size, opts) do
+  defp normalize_block_result(
+         {hidden_state, attention_info, cross_attention_info, internals},
+         _input
+       )
+       when is_map(internals) do
+    {hidden_state, attention_info, cross_attention_info, internals}
+  end
+
+  defp normalize_block_result({hidden_state, attention_info, cross_attention_info}, input) do
+    {hidden_state, attention_info, cross_attention_info,
+     %{
+       residual_stream_pre: input,
+       residual_stream_post: hidden_state
+     }}
+  end
+
+  defp normalize_attention_info({attention, cache, relative_bias, internals})
+       when is_map(internals) do
+    {attention, cache, relative_bias, internals}
+  end
+
+  defp normalize_attention_info({attention, cache, relative_bias}) do
+    {attention, cache, relative_bias, default_attention_internals()}
+  end
+
+  defp normalize_block_internals(internals) do
+    defaults = %{
+      attention_query: Layers.none(),
+      attention_key: Layers.none(),
+      attention_value: Layers.none(),
+      attention_z: Layers.none(),
+      attention_output: Layers.none(),
+      mlp_input: Layers.none(),
+      mlp_pre_activation: Layers.none(),
+      mlp_post_activation: Layers.none(),
+      mlp_output: Layers.none(),
+      residual_stream_pre: Layers.none(),
+      residual_stream_mid: Layers.none(),
+      residual_stream_post: Layers.none()
+    }
+
+    Map.merge(defaults, internals)
+  end
+
+  defp default_attention_internals() do
+    %{
+      query: Layers.none(),
+      key: Layers.none(),
+      value: Layers.none(),
+      z: Layers.none(),
+      output: Layers.none()
+    }
+  end
+
+  defp normalize_ffn_result(input, {output, internals}) when is_map(internals) do
+    {output, Map.merge(default_ffn_internals(input, output), internals)}
+  end
+
+  defp normalize_ffn_result(input, output) do
+    {output, default_ffn_internals(input, output)}
+  end
+
+  defp default_ffn_internals(input, output) do
+    %{
+      input: input,
+      pre_activation: Layers.none(),
+      post_activation: Layers.none(),
+      output: output
+    }
+  end
+
+  defp basic_ffn_with_internals(x, intermediate_size, output_size, opts) do
     name = opts[:name]
 
-    x
-    |> Axon.dense(intermediate_size,
-      kernel_initializer: opts[:kernel_initializer],
-      name: join(name, "intermediate")
-    )
-    |> Layers.activation(opts[:activation])
-    |> Axon.dense(output_size,
-      kernel_initializer: opts[:kernel_initializer],
-      name: join(name, "output")
-    )
-    |> Axon.dropout(rate: opts[:dropout_rate])
+    pre_activation =
+      Axon.dense(x, intermediate_size,
+        kernel_initializer: opts[:kernel_initializer],
+        name: join(name, "intermediate")
+      )
+
+    post_activation = Layers.activation(pre_activation, opts[:activation])
+
+    output =
+      post_activation
+      |> Axon.dense(output_size,
+        kernel_initializer: opts[:kernel_initializer],
+        name: join(name, "output")
+      )
+      |> Axon.dropout(rate: opts[:dropout_rate])
+
+    {output,
+     %{
+       input: x,
+       pre_activation: pre_activation,
+       post_activation: post_activation,
+       output: output
+     }}
   end
 
   @doc """
@@ -747,6 +936,13 @@ defmodule Bumblebee.Layers.Transformer do
 
   """
   def multi_head_attention(query, key, value, opts) do
+    {attention_output, attention_weights, attention_cache, attention_relative_bias, _internals} =
+      multi_head_attention_outputs(query, key, value, opts)
+
+    {attention_output, attention_weights, attention_cache, attention_relative_bias}
+  end
+
+  defp multi_head_attention_outputs(query, key, value, opts) do
     validate_required_keys!(opts, [:num_heads, :hidden_size])
 
     opts =
@@ -894,6 +1090,10 @@ defmodule Bumblebee.Layers.Transformer do
           {query, key}
       end
 
+    attention_query = query
+    attention_key = key
+    attention_value = value
+
     num_key_value_groups = div(num_heads, num_key_value_heads)
     key = repeat_states(key, num_key_value_groups)
     value = repeat_states(value, num_key_value_groups)
@@ -919,7 +1119,7 @@ defmodule Bumblebee.Layers.Transformer do
           )
       end
 
-    {attention_output, attention_weights} =
+    {attention_z, attention_weights} =
       Layers.attention(
         query,
         key,
@@ -935,7 +1135,7 @@ defmodule Bumblebee.Layers.Transformer do
       )
 
     attention_output =
-      attention_output
+      attention_z
       |> Layers.flatten_trailing()
       |> Axon.dense(hidden_size,
         kernel_initializer: kernel_initializer,
@@ -943,7 +1143,15 @@ defmodule Bumblebee.Layers.Transformer do
         use_bias: output_use_bias
       )
 
-    {attention_output, attention_weights, attention_cache, attention_relative_bias}
+    internals = %{
+      query: attention_query,
+      key: attention_key,
+      value: attention_value,
+      z: attention_z,
+      output: attention_output
+    }
+
+    {attention_output, attention_weights, attention_cache, attention_relative_bias, internals}
   end
 
   defp repeat_states(state, 1), do: state
