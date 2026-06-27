@@ -1023,7 +1023,9 @@ defmodule Bumblebee.Layers do
     :mlp_outputs => :output_mlp_activations,
     :residual_streams_pre => :output_residual_streams,
     :residual_streams_mid => :output_residual_streams,
-    :residual_streams_post => :output_residual_streams
+    :residual_streams_post => :output_residual_streams,
+    :norm_scales => :output_norm_telemetry,
+    :norm_normalized => :output_norm_telemetry
   }
 
   defp maybe_opt_in_output(%Axon{} = input, key) do
@@ -1176,6 +1178,65 @@ defmodule Bumblebee.Layers do
   end
 
   @doc """
+  Adds a Layer Normalization layer and returns normalization telemetry.
+  """
+  def layer_norm_with_telemetry(input, opts \\ []) do
+    opts =
+      Keyword.validate!(opts, [
+        :name,
+        :meta,
+        gamma_initializer: :glorot_uniform,
+        beta_initializer: :zeros,
+        channel_index: -1,
+        epsilon: 1.0e-5
+      ])
+
+    channel_index = opts[:channel_index]
+
+    gamma = Axon.param("gamma", [{:axis, channel_index}], initializer: opts[:gamma_initializer])
+    beta = Axon.param("beta", [{:axis, channel_index}], initializer: opts[:beta_initializer])
+
+    output =
+      Axon.layer(&layer_norm_with_telemetry_impl/4, [input, gamma, beta],
+        name: opts[:name],
+        meta: opts[:meta],
+        epsilon: opts[:epsilon],
+        channel_index: channel_index,
+        op_name: :layer_norm
+      )
+
+    unwrap_tuple(output, 3)
+  end
+
+  defnp layer_norm_with_telemetry_impl(input, gamma, beta, opts \\ []) do
+    opts = keyword!(opts, epsilon: 1.0e-5, channel_index: -1, mode: :inference)
+
+    num_channels = Nx.axis_size(input, opts[:channel_index])
+    parameter_shape = norm_parameter_reshape(input, num_channels, opts[:channel_index])
+
+    gamma = Nx.reshape(gamma, parameter_shape)
+    beta = Nx.reshape(beta, parameter_shape)
+
+    mean = Nx.mean(input, axes: [opts[:channel_index]], keep_axes: true)
+    centered = input - mean
+    variance = Nx.mean(Nx.pow(centered, 2), axes: [opts[:channel_index]], keep_axes: true)
+    scale = Nx.rsqrt(variance + opts[:epsilon])
+    normalized = centered * scale
+
+    {normalized * gamma + beta, scale, normalized}
+  end
+
+  deftransformp norm_parameter_reshape(input, num_channels, channel_index) do
+    1
+    |> List.duplicate(Nx.rank(input))
+    |> List.to_tuple()
+    |> put_elem(
+      Nx.Shape.normalize_axis(Nx.shape(input), channel_index, Nx.names(input)),
+      num_channels
+    )
+  end
+
+  @doc """
   Adds an RMS Normalization layer to the network.
 
   ## Options
@@ -1244,6 +1305,49 @@ defmodule Bumblebee.Layers do
     )
   end
 
+  def rms_norm_with_telemetry(input, opts \\ []) do
+    opts =
+      Keyword.validate!(opts, [
+        :name,
+        shift: 0.0,
+        channel_index: -1,
+        epsilon: 1.0e-6,
+        upcast: :normalization,
+        initializer: :ones
+      ])
+
+    impl =
+      case opts[:upcast] do
+        :normalization ->
+          &rms_norm_with_telemetry_impl_upcast_normalization/3
+
+        :all ->
+          &rms_norm_with_telemetry_impl_upcast_all/3
+
+        other ->
+          raise ArgumentError,
+                "expected :upcast to be either :all or :normalization, got: #{other}"
+      end
+
+    weight_shape = fn input_shape ->
+      names = List.duplicate(nil, Nx.rank(input_shape))
+      axis = Nx.Shape.normalize_axis(input_shape, opts[:channel_index], names)
+      {elem(input_shape, axis)}
+    end
+
+    weight = Axon.param("weight", weight_shape, initializer: opts[:initializer])
+
+    output =
+      Axon.layer(impl, [input, weight],
+        name: opts[:name],
+        shift: opts[:shift],
+        epsilon: opts[:epsilon],
+        op_name: :rms_norm
+      )
+
+    unwrap_tuple(output, 3)
+  end
+
   defnp rms_norm_impl_upcast_normalization(input, weight, opts \\ []) do
     opts = keyword!(opts, shift: 0.0, epsilon: 1.0e-6, channel_index: -1, mode: :train)
 
@@ -1254,6 +1358,32 @@ defmodule Bumblebee.Layers do
       |> Nx.as_type(Nx.type(input))
 
     normalized_input * (opts[:shift] + weight)
+  end
+
+  defnp rms_norm_with_telemetry_impl_upcast_normalization(input, weight, opts \\ []) do
+    opts = keyword!(opts, shift: 0.0, epsilon: 1.0e-6, channel_index: -1, mode: :train)
+
+    input_f32 = Nx.as_type(input, :f32)
+    scale = rms_scale(input_f32, opts)
+
+    normalized_input =
+      input_f32
+      |> Nx.multiply(scale)
+      |> Nx.as_type(Nx.type(input))
+
+    {normalized_input * (opts[:shift] + weight), scale, normalized_input}
+  end
+
+  defnp rms_norm_with_telemetry_impl_upcast_all(input, weight, opts \\ []) do
+    opts = keyword!(opts, shift: 0.0, epsilon: 1.0e-6, channel_index: -1, mode: :train)
+
+    input = Nx.as_type(input, :f32)
+    weight = Nx.as_type(weight, :f32)
+
+    scale = rms_scale(input, opts)
+    normalized_input = input * scale
+
+    {normalized_input * (opts[:shift] + weight), scale, normalized_input}
   end
 
   defnp rms_norm_impl_upcast_all(input, weight, opts \\ []) do
@@ -1268,12 +1398,16 @@ defmodule Bumblebee.Layers do
   end
 
   defnp rms_normalize(input, opts) do
+    input * rms_scale(input, opts)
+  end
+
+  defnp rms_scale(input, opts) do
     variance =
       input
       |> Nx.pow(2)
       |> Nx.mean(axes: [opts[:channel_index]], keep_axes: true)
 
-    input * Nx.rsqrt(variance + opts[:epsilon])
+    Nx.rsqrt(variance + opts[:epsilon])
   end
 
   @doc """

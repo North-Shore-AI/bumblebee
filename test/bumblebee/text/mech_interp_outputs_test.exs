@@ -9,15 +9,18 @@ defmodule Bumblebee.Text.MechInterpOutputsTest do
       assert %Axon.None{} = outputs.attention_scores
       assert %Axon.None{} = outputs.mlp_pre_activations
       assert %Axon.None{} = outputs.residual_streams_pre
+      assert %Axon.None{} = outputs.norm_scales
+      assert %Axon.None{} = outputs.norm_normalized
     end
 
-    test "include attention, MLP, and residual activations when opted in" do
+    test "include attention, MLP, residual, and norm activations when opted in" do
       outputs =
         run_gpt2(
           output_attention_qkv: true,
           output_attention_scores: true,
           output_mlp_activations: true,
-          output_residual_streams: true
+          output_residual_streams: true,
+          output_norm_telemetry: true
         )
 
       assert tuple_size(outputs.attention_queries) == 2
@@ -38,6 +41,9 @@ defmodule Bumblebee.Text.MechInterpOutputsTest do
       assert Nx.shape(elem(outputs.residual_streams_pre, 0)) == {1, 3, 4}
       assert Nx.shape(elem(outputs.residual_streams_mid, 0)) == {1, 3, 4}
       assert Nx.shape(elem(outputs.residual_streams_post, 0)) == {1, 3, 4}
+
+      assert Nx.shape(outputs.norm_scales) == {1, 3, 1}
+      assert Nx.shape(outputs.norm_normalized) == {1, 3, 4}
     end
   end
 
@@ -47,7 +53,8 @@ defmodule Bumblebee.Text.MechInterpOutputsTest do
         run_qwen3(
           output_attention_qkv: true,
           output_attention_scores: true,
-          output_mlp_activations: true
+          output_mlp_activations: true,
+          output_norm_telemetry: true
         )
 
       assert Nx.shape(elem(outputs.attention_queries, 0)) == {1, 3, 2, 2}
@@ -60,6 +67,9 @@ defmodule Bumblebee.Text.MechInterpOutputsTest do
       assert Nx.shape(elem(outputs.mlp_pre_activations, 0)) == {1, 3, 8}
       assert Nx.shape(elem(outputs.mlp_post_activations, 0)) == {1, 3, 8}
       assert Nx.shape(elem(outputs.mlp_outputs, 0)) == {1, 3, 4}
+
+      assert Nx.shape(outputs.norm_scales) == {1, 3, 1}
+      assert Nx.shape(outputs.norm_normalized) == {1, 3, 4}
     end
   end
 

@@ -139,7 +139,7 @@ defmodule Bumblebee.Text.Qwen3 do
 
   ## Global layer options
 
-  #{Shared.global_layer_options_doc([:output_hidden_states, :output_attentions, :output_attention_qkv, :output_attention_scores, :output_mlp_activations, :output_residual_streams])}
+  #{Shared.global_layer_options_doc([:output_hidden_states, :output_attentions, :output_attention_qkv, :output_attention_scores, :output_mlp_activations, :output_residual_streams, :output_norm_telemetry])}
 
   ## Configuration
 
@@ -316,8 +316,8 @@ defmodule Bumblebee.Text.Qwen3 do
         name: "decoder"
       )
 
-    hidden_state =
-      Layers.rms_norm(decoder_outputs.hidden_state,
+    {hidden_state, norm_scale, norm_normalized} =
+      Layers.rms_norm_with_telemetry(decoder_outputs.hidden_state,
         name: "output_norm",
         epsilon: spec.layer_norm_epsilon
       )
@@ -326,7 +326,9 @@ defmodule Bumblebee.Text.Qwen3 do
       hidden_state: hidden_state,
       hidden_states: Layers.append(decoder_outputs.hidden_states, hidden_state),
       attentions: decoder_outputs.attentions,
-      cache: decoder_outputs.cache
+      cache: decoder_outputs.cache,
+      norm_scales: norm_scale,
+      norm_normalized: norm_normalized
     })
   end
 

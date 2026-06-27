@@ -31,6 +31,10 @@ defmodule Bumblebee.Shared do
         default: false,
         doc: "whether the model should return transformer residual stream activations"
       ],
+      output_norm_telemetry: [
+        default: false,
+        doc: "whether the model should return final normalization telemetry"
+      ],
       num_labels: [
         default: 2,
         doc: "the number of labels to use in the last layer for the classification task"
@@ -95,7 +99,9 @@ defmodule Bumblebee.Shared do
       output_mlp_activations:
         "when `true`, the model output includes feed-forward network activations",
       output_residual_streams:
-        "when `true`, the model output includes transformer residual stream activations"
+        "when `true`, the model output includes transformer residual stream activations",
+      output_norm_telemetry:
+        "when `true`, the model output includes final normalization scale and normalized activations"
     ]
 
     Enum.map_join(names, "\n\n", fn name ->
@@ -128,6 +134,7 @@ defmodule Bumblebee.Shared do
       output_attention_scores: {"output_attention_scores", boolean()},
       output_mlp_activations: {"output_mlp_activations", boolean()},
       output_residual_streams: {"output_residual_streams", boolean()},
+      output_norm_telemetry: {"output_norm_telemetry", boolean()},
       num_labels: {"num_labels", number()},
       id_to_label: {"id2label", map(integer_as_string(), string())},
       use_cross_attention: {"use_cross_attention", false},
